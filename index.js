@@ -1,5 +1,5 @@
 const express = require('express');
-const axios = require('axios');
+const puppeteer = require('puppeteer');
 const app = express();
 
 app.use(express.json());
@@ -11,33 +11,58 @@ app.post('/download-video', async (req, res) => {
     return res.status(400).json({ error: 'Instagram post URL is required' });
   }
 
+  let browser;
   try {
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-      },
+    browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: true,
     });
 
-    const html = response.data;
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+    );
 
-    const videoUrlMatch = html.match(/<meta property="og:video" content="([^"]+)"/);
+    await page.goto(url, { waitUntil: 'networkidle2' });
 
-    if (!videoUrlMatch) {
+    const videoUrl = await page.evaluate(() => {
+      // Try to get video URL from meta tag
+      const meta = document.querySelector('meta[property="og:video"]');
+      if (meta) {
+        return meta.content;
+      }
+
+      // Try to get from window._sharedData JSON
+      try {
+        const jsonData = window._sharedData;
+        const media = jsonData.entry_data.PostPage?.[0]?.graphql?.shortcode_media;
+        if (media && media.is_video && media.video_url) {
+          return media.video_url;
+        }
+      } catch (e) {
+        // ignore errors
+      }
+
+      return null;
+    });
+
+    if (!videoUrl) {
       return res.status(404).json({ error: 'Video URL not found' });
     }
 
-    const videoUrl = videoUrlMatch[1];
-
     res.json({ videoUrl });
   } catch (error) {
-    console.error('Error fetching Instagram video URL:', error.message);
+    console.error('Error:', error.message);
     res.status(500).json({ error: 'Failed to fetch video URL' });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
